@@ -10,6 +10,7 @@ import json
 import gc
 from datetime import datetime, timedelta
 import logging
+from functools import wraps
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# Add basic authentication credentials
+USERNAME = 'Admin'
+PASSWORD = 'Starship101'
 
 # Ensure these paths work in both local and deployed environments
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +39,25 @@ progress_queues = {}
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+
+# Basic authentication decorator
+def check_auth(username, password):
+    return username == USERNAME and password == PASSWORD
+
+def authenticate():
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -53,11 +77,14 @@ def cleanup_old_queues():
 cleanup_thread = threading.Thread(target=cleanup_old_queues, daemon=True)
 cleanup_thread.start()
 
+# Apply authentication to all routes
 @app.route('/')
+@requires_auth
 def index():
     return app.send_static_file('index.html')
 
 @app.route('/init-progress')
+@requires_auth
 def init_progress():
     try:
         request_id = os.urandom(16).hex()
@@ -71,6 +98,7 @@ def init_progress():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/progress/<request_id>')
+@requires_auth
 def progress(request_id):
     try:
         if request_id not in progress_queues:
@@ -123,6 +151,7 @@ def progress(request_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
+@requires_auth
 def upload_file():
     try:
         if 'file' not in request.files:
@@ -254,6 +283,7 @@ def upload_file():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/cleanup', methods=['POST'])
+@requires_auth
 def cleanup():
     try:
         # Clear all caches
@@ -274,8 +304,8 @@ def cleanup():
         app.logger.error(f"Error during cleanup: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/download/<filename>')
+@requires_auth
 def download_file(filename):
     try:
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
