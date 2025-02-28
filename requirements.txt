@@ -1,0 +1,13 @@
+Flask
+gunicorn
+Pillow
+requests
+google-auth
+google-auth-oauthlib
+google-api-python-client
+tqdm
+imagehash
+pandas
+pillow-heif
+psutil
+aiohttp

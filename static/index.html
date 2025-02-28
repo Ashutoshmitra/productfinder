@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Product Finder</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .drop-zone {
+            border: 2px dashed #cbd5e0;
+            transition: all 0.3s ease;
+        }
+        .drop-zone.dragover {
+            border-color: #4299e1;
+            background-color: #ebf8ff;
+        }
+        .loading {
+            display: none;
+        }
+        .loading.active {
+            display: flex;
+        }
+        .product-results {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 1rem;
+        }
+        .product-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            background-color: white;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        .matches-container {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.25rem;
+        }
+        .match-item {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .match-item:last-child {
+            border-bottom: none;
+        }
+        .preview-image {
+            max-width: 100px;
+            max-height: 100px;
+            object-fit: contain;
+            margin-right: 1rem;
+        }
+        .uploaded-image {
+            max-width: 200px;
+            max-height: 200px;
+            object-fit: contain;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-6xl mx-auto">
+            <!-- Header -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-800 mb-2">Multi-Product Finder</h1>
+                <p class="text-gray-600">Upload multiple images to find matching products</p>
+            </div>
+
+            <!-- Upload Zone -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+                <form id="upload-form">
+                    <div id="drop-zone" class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+                        <div class="space-y-4">
+                            <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                                <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <div class="text-gray-600">
+                                <button type="button" onclick="document.getElementById('file-upload').click()" class="relative cursor-pointer rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none">
+                                    Upload files
+                                </button>
+                                <input id="file-upload" name="files" type="file" class="hidden" accept="image/*" multiple>
+                                <p class="pl-1">or drag and drop</p>
+                            </div>
+                            <p class="text-xs text-gray-500">PNG, JPG, GIF, WebP up to 10MB</p>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Product Results -->
+            <div id="product-results" class="product-results"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentRequestId = null;
+        let uploadedFiles = [];
+        let matchedProducts = {};
+        let sheetMetadata = null;
+
+        const dropZone = document.getElementById('drop-zone');
+        const fileUpload = document.getElementById('file-upload');
+        const productResults = document.getElementById('product-results');
+
+        // Existing drag and drop event handlers from previous script
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            dropZone.classList.add('dragover');
+        }
+
+        function unhighlight(e) {
+            dropZone.classList.remove('dragover');
+        }
+
+        dropZone.addEventListener('drop', handleDrop, false);
+        fileUpload.addEventListener('change', handleFileSelect, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        function handleFileSelect(e) {
+            const files = e.target.files;
+            handleFiles(files);
+        }
+
+        async function handleFiles(files) {
+            // Reset previous results
+            productResults.innerHTML = '';
+            matchedProducts = {};
+            uploadedFiles = Array.from(files);
+
+            // Process all files in parallel using Promise.all
+            await Promise.all(uploadedFiles.map(processFile));
+        }
+
+
+        async function processFile(file) {
+            try {
+                // Initialize progress tracking
+                const initResponse = await fetch('/init-progress');
+                const initData = await initResponse.json();
+                const requestId = initData.request_id;  // Each file gets its own request ID
+
+                // Create a card for this product
+                const productCard = document.createElement('div');
+                productCard.className = 'product-card';
+                productCard.innerHTML = `
+                    <div class="text-center">
+                        <h3 class="font-semibold mb-2 truncate">Processing: ${file.name}</h3>
+                        <img src="${URL.createObjectURL(file)}" class="mx-auto uploaded-image" alt="Uploaded Image">
+                        <div class="progress-container mt-2">
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-blue-600 h-2.5 rounded-full progress-bar" style="width: 0%"></div>
+                            </div>
+                            <p class="text-xs text-gray-600 mt-1 progress-text">0%</p>
+                            <p class="text-xs text-gray-600 sheet-info"></p>
+                        </div>
+                        <div class="matches-container mt-4 hidden">
+                            <div class="product-matches"></div>
+                        </div>
+                    </div>
+                `;
+                productResults.appendChild(productCard);
+
+                // Get DOM elements for this specific card
+                const progressBar = productCard.querySelector('.progress-bar');
+                const progressText = productCard.querySelector('.progress-text');
+                const sheetInfoText = productCard.querySelector('.sheet-info');
+                const matchesContainer = productCard.querySelector('.matches-container');
+                const productMatches = productCard.querySelector('.product-matches');
+
+                // Initialize matched products for this file
+                matchedProducts[file.name] = [];
+
+                // Set up event source for progress tracking
+                const eventSource = new EventSource(`/progress/${requestId}`);
+                
+                eventSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    // Update progress
+                    if (data.percentage !== null) {
+                        progressBar.style.width = `${data.percentage}%`;
+                        progressText.textContent = `${data.percentage}%`;
+                    }
+
+                    // Update sheet info if available
+                    if (data.total_products) {
+                        sheetInfoText.textContent = `Total Products: ${data.total_products}`;
+                    }
+
+                    // If we have a matching product
+                    if (data.url && data.difference !== undefined && data.difference !== null && data.difference <= 10) {
+                        // Add to matched products
+                        matchedProducts[file.name].push(data);
+
+                        // Update processed count if available
+                        if (data.processed !== undefined && data.total_products !== undefined) {
+                            sheetInfoText.textContent = `Total Products: ${data.total_products} | Processed: ${data.processed}`;
+                        }
+
+                        // Render matches
+                        renderMatches(file.name, productMatches, matchesContainer);
+                    }
+
+                    // Handle completion or error
+                    if (data.status === 'complete' || data.status === 'error') {
+                        eventSource.close();
+                    }
+                };
+
+                // Upload the file
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('request_id', requestId);
+
+                const uploadResponse = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const uploadData = await uploadResponse.json();
+
+                // Handle upload response
+                if (!uploadData.success) {
+                    productMatches.innerHTML = `
+                        <div class="text-center p-4">
+                            <p class="text-red-500 text-sm">No match found for ${file.name}</p>
+                        </div>
+                    `;
+                }
+
+            } catch (error) {
+                console.error('Error processing file:', error);
+            }
+        }
+
+
+        function renderMatches(fileName, matchesContainer, matchesWrapper) {
+            const matches = matchedProducts[fileName];
+            
+            // Sort matches by difference (lowest first)
+            matches.sort((a, b) => a.difference - b.difference);
+
+            // Clear previous matches
+            matchesContainer.innerHTML = '';
+
+            if (matches.length === 0) return;
+
+            // Show matches container
+            matchesWrapper.classList.remove('hidden');
+
+            // Render each match
+            matches.forEach((match, index) => {
+                const matchItem = document.createElement('div');
+                matchItem.className = 'match-item hover:bg-gray-50';
+                matchItem.innerHTML = `
+                    <img src="${match.url}" class="preview-image" alt="Product Preview">
+                    <div class="flex-grow">
+                        <p class="font-semibold text-sm ${match.difference === 0 ? 'text-green-600' : 'text-yellow-600'}">
+                            ${match.title || 'No Title Found'}
+                        </p>
+                        <div class="flex justify-between items-center mt-2">
+                            <span class="text-xs text-gray-500">Difference: ${match.difference}</span>
+                            <button class="download-csv bg-blue-500 text-white text-xs px-2 py-1 rounded hover:bg-blue-600" 
+                                    data-handle="${match.handle}">
+                                Download CSV
+                            </button>
+                        </div>
+                    </div>
+                `;
+
+                // Add event listener for CSV download
+                const downloadBtn = matchItem.querySelector('.download-csv');
+                downloadBtn.addEventListener('click', async () => {
+                    try {
+                        const handle = downloadBtn.getAttribute('data-handle');
+                        const response = await fetch(`/download/filtered_${fileName}.csv?handle=${handle}`);
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `filtered_${match.title || 'product'}.csv`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    } catch (error) {
+                        console.error('Download error:', error);
+                    }
+                });
+
+                matchesContainer.appendChild(matchItem);
+            });
+        }
+    </script>
+</body>
+</html>
